@@ -1,24 +1,26 @@
-# [Package Name]
+# Frame Fusion
 
-> One-sentence summary of what this package does (e.g., "Rotates an image by a specified angle.")
+> Merges the sharpest of several recent frames of the same object into one cleaner image, so barcode and text readers see less noise and less blur.
 
-**Category:** Utility / Capsule / Classical Computer Vision / Preprocessing / Auxiliary / Sources / Widget
+**Category:** Preprocessing
 
-**Status:** Stable / Beta / Experimental
+**Status:** Beta
 
-**Last Updated:** DD.MM.YYYY
+**Last Updated:** 25.11.2026
 
 ---
 
 ## 1. Overview
 
-Describe in 2–3 sentences/paragraphs what this package does, what problem it solves, and typical use cases. Mention when a user should choose this package over a similar one, if relevant.
+Frame Fusion takes a list of recent frames of one object, usually the output of Stack Image placed after Crop, and returns a single image. It scores every frame for sharpness, keeps the sharpest share, aligns each kept frame to the sharpest one and merges them. Merging removes sensor and compression noise; leaving blurred frames out keeps fine lines sharp. This approach is known as "lucky imaging".
+
+The node keeps no frames itself. Collecting frames is Stack Image's job; this node only merges what it receives. Each call works on the list it is given, and per-frame alignment results are cached per node, so a frame is aligned only once while it stays in the list.
 
 **Typical use cases:**
 
-- [Use case 1]
-- [Use case 2]
-- [Use case 3]
+- Reading a barcode or label on a moving pallet or conveyor when no single frame is sharp and clean enough.
+- OCR on plates, labels or displays filmed in low light, where single frames are noisy.
+- Reading a gauge or a small printed code from a camera that is far away.
 
 ---
 
@@ -26,7 +28,7 @@ Describe in 2–3 sentences/paragraphs what this package does, what problem it s
 
 | Field Name | Kind/Type | Required | Default | Description |
 |---|---|---|---|---|
-| `[inputFieldName]` | `[Image / string / number / list / object ...]` | Yes/No | `[default or —]` | [What this input represents] |
+| `inputImages` | list of `Image` or `Image` | Yes | — | Recent frames of the same object (e.g. Stack Image `outputImages`). Sizes may differ slightly. A single image is passed through. |
 
 > Derived from the package `Inputs` / `Input` classes. A field that accepts a single object or a list is shown explicitly.
 
@@ -36,7 +38,13 @@ Describe in 2–3 sentences/paragraphs what this package does, what problem it s
 
 | Parameter | Type | Field Type (UI control) | Allowed Values / Range | Default | Description |
 |---|---|---|---|---|---|
-| `[ParamName]` | `[number/bool/string/object]` | `[textInput/dropdownlist/...]` | `[range or options]` | `[default]` | [What this parameter controls, and how it affects behavior] |
+| `Alignment` | string | dropdownlist | Shift, Scale and Perspective (`alignHomography`) · Shift (`alignTranslation`) · None (`alignNone`) | `alignHomography` | How frames are aligned to the sharpest one |
+| `Selection` | string | dependentDropdownlist | Sharpest Frames (`selectSharpest`) · All Frames (`selectAll`) | `selectSharpest` | Which frames are merged |
+| `KeepPercent` | number | textInput | 1–100 | 30 | Share of frames kept, sharpest first (Sharpest Frames only) |
+| `MergeMethod` | string | dropdownlist | Mean (`mergeMean`) · Median (`mergeMedian`) | `mergeMean` | How aligned frames are combined |
+| `Upscale` | number | dropdownlist | 1x (`1`) · 2x (`2`) | `1` | Output size relative to the sharpest frame |
+
+Task: `Fusion` (the only task).
 
 > Derived from the package `Configs` classes, including validation bounds and dropdown option labels where present. `ConfigExecutor` is not included.
 
@@ -46,7 +54,8 @@ Describe in 2–3 sentences/paragraphs what this package does, what problem it s
 
 | Field Name | Kind/Type | Description |
 |---|---|---|
-| `[outputFieldName]` | `[Image / string / number / list / object ...]` | [What this output represents] |
+| `outputImage` | `Image` | The fused frame, same size as the sharpest input frame (twice that with 2x). Stored in Redis; `value` is empty. |
+| `outputData` | object | `inputFrames`, `selectedFrames`, `usedFrames`, `referenceSharpness`, `meanSharpness` |
 
 > Derived from the package `Outputs` classes.
 
@@ -54,25 +63,25 @@ Describe in 2–3 sentences/paragraphs what this package does, what problem it s
 
 ## 5. Use Case Examples
 
-**Use case 1: [Short title]**
+**Use case 1: Barcode on a moving pallet**
 
-[Describe the scenario — what pipeline is being built, what package(s) come before this one and provide its input, what this package does in that context, and what package(s) come after it to consume its output.]
+`VideoFeed → Yolo (barcode model) → Crop (Dynamic, padding 10–20 %) → Stack Image (Stack Size 20) → Frame Fusion (Shift, Scale and Perspective; Sharpest Frames 30 %; Mean) → Filtering (Sharpen) → Scaling → Barcode Reader`
 
-**Use case 2: [Short title]**
+Stack Image keeps the last 20 crops; Frame Fusion merges the sharpest 6 of them. Put Stack Image after Crop: it shrinks frames larger than 1920x1080, which would cost detail on a full 4K frame.
 
-[Same structure as above, for a different context.]
+**Use case 2: Read only when enough frames were fused**
 
-**Use case 3: [Short title, optional]**
-
-[Same structure as above, for a different context.]
+Connect `outputData` to If (`usedFrames >= 4`) and pass `outputImage` to the reader only then, so the reader does not run on a single noisy frame right after the object appears.
 
 ---
 
 ## 6. Limitations and Notes
 
-- [Known constraints, e.g. value ranges, unsupported formats, size limits]
-- [Performance notes, e.g. GPU requirement, expected latency]
-- [Common pitfalls or things to watch out for]
+- One object per list. Stack Image stacks one image per call; when Crop outputs several boxes, only the first is stacked.
+- Frames that do not line up with the sharpest one (correlation below 0.5) are left out. When the object changes (next pallet), old frames drop out by themselves until Stack Image has refilled; `usedFrames` shows it.
+- Alignment cost: Shift ≈ 25 ms, Shift, Scale and Perspective ≈ 110 ms per call for 20 crops of 730x480 on an Apple M-series CPU (only new frames are aligned when the sharpest frame stays the same). Large crops are aligned at a longest side of 400 px; the result is applied at full size.
+- Fusion removes noise and avoids blurred frames; it cannot recover detail that is missing from every frame.
+- Median needs at least 3 used frames; with fewer, Mean is used.
 
 ---
 
@@ -106,3 +115,6 @@ To run all checks at any time, use `pre-commit run --all-files`.
    | `refactor`, `docs`, `style`, `test`, `build`, `ci`, `chore` | none |
 
 3. Merge `develop` into `main` to release. A release PR is then opened that bumps the version in `setup.py` and updates `CHANGELOG.md`. Merging it creates the tag and the GitHub Release. Don't edit the version yourself.
+
+- Schema: `python apps/export.py` writes `data.json`. Try against a running host: `python apps/client.py`.
+- The fusion itself is in `src/utils/fusion.py` (numpy/OpenCV only, no SDK), so it can be tried on saved frames directly.

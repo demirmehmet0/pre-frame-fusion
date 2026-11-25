@@ -1,22 +1,24 @@
 from sdks.novavision.src.helper.package import PackageHelper
-from components.Package.src.models.PackageModel import (
+from components.FrameFusion.src.models.PackageModel import (
     PackageModel,
     PackageConfigs,
     ConfigExecutor,
-    PackageOutputs,
-    PackageResponse,
-    PackageExecutor,
+    FusionOutputs,
     OutputImage,
+    OutputData,
+    FusionResponse,
+    FusionExecutor,
 )
 
+_EXECUTORS = {
+    "Fusion": (FusionResponse, FusionExecutor),
+}
 
-def build_response(context):
-    outputImage = OutputImage(value=context.image)
-    Outputs = PackageOutputs(outputImage=outputImage)
-    packageResponse = PackageResponse(outputs=Outputs)
-    packageExecutor = PackageExecutor(value=packageResponse)
-    executor = ConfigExecutor(value=packageExecutor)
+
+def build_response(context, executor_name):
+    response_class, executor_class = _EXECUTORS[executor_name]
+    outputs = FusionOutputs(outputImage=OutputImage(value=context.image), outputData=OutputData(value=context.data))
+    executor = ConfigExecutor(value=executor_class(value=response_class(outputs=outputs)))
     packageConfigs = PackageConfigs(executor=executor)
     package = PackageHelper(packageModel=PackageModel, packageConfigs=packageConfigs)
-    packageModel = package.build_model(context)
-    return packageModel
+    return package.build_model(context)
