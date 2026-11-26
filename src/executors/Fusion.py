@@ -4,17 +4,22 @@ Fuses a list of recent frames of the same object into one sharper, less noisy im
 
 import os
 import sys
+import time
 
 import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../"))
 
 from sdks.novavision.src.media.image import Image
+from sdks.novavision.src.base.logger import LoggerManager
 from sdks.novavision.src.base.component import Component
 from sdks.novavision.src.helper.executor import Executor
 from components.FrameFusion.src.utils.response import build_response
 from components.FrameFusion.src.utils.fusion import LRU, fuse
 from components.FrameFusion.src.models.PackageModel import PackageModel
+
+logger = LoggerManager()
+STATS_INTERVAL = 5.0
 
 
 class Fusion(Component):
@@ -32,7 +37,7 @@ class Fusion(Component):
 
     @staticmethod
     def bootstrap(config: dict) -> dict:
-        return {"caches": {}}
+        return {"caches": {}, "stats": {}}
 
     def _cache(self) -> LRU:
         # bootstrap is shared by every node of this executor in the container: keep one cache per node
@@ -42,7 +47,29 @@ class Fusion(Component):
             caches[key] = LRU()
         return caches[key]
 
+    def _report(self, elapsed: float):
+        # one summary line per node every STATS_INTERVAL seconds; a line per call would flood the log at video rate
+        stats = self.bootstrap.setdefault("stats", {})
+        key = self.uID or "default"
+        now = time.monotonic()
+        s = stats.setdefault(key, {"since": now, "calls": 0, "ms": 0.0, "used": 0, "selected": 0, "inputs": 0})
+        s["calls"] += 1
+        s["ms"] += elapsed * 1000.0
+        s["used"] += self.data.get("usedFrames", 0)
+        s["selected"] += self.data.get("selectedFrames", 0)
+        s["inputs"] += self.data.get("inputFrames", 0)
+        span = now - s["since"]
+        if span < STATS_INTERVAL:
+            return
+        n = s["calls"]
+        logger.info(
+            f"FrameFusion {key}: {n} calls in {span:.1f} s, {s['ms'] / n:.0f} ms avg, "
+            f"used {s['used'] / n:.1f} of {s['selected'] / n:.1f} selected frames (input {s['inputs'] / n:.1f})"
+        )
+        stats[key] = {"since": now, "calls": 0, "ms": 0.0, "used": 0, "selected": 0, "inputs": 0}
+
     def run(self):
+        started = time.perf_counter()
         items = self.images if isinstance(self.images, list) else [self.images]
         items = [item for item in items if item]
         if not items:
@@ -60,6 +87,7 @@ class Fusion(Component):
         out = frames[ref]
         out.value = fused
         self.image = Image.set_frame(img=out, package_uID=self.uID, redis_db=self.redis_db)
+        self._report(time.perf_counter() - started)
         return build_response(context=self, executor_name="Fusion")
 
 
